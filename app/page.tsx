@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useEffect } from "react";
 import { 
   Upload, 
   File, 
@@ -10,7 +10,6 @@ import {
   FileVideo, 
   Download, 
   Trash2, 
-  Share2, 
   X, 
   Search, 
   Smartphone, 
@@ -18,9 +17,9 @@ import {
   QrCode, 
   CheckCircle2, 
   WifiIcon,
-  MoreVertical,
   Clock,
-  Folder
+  Folder,
+  RefreshCw
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -30,8 +29,7 @@ interface SharedFile {
   name: string;
   size: number;
   type: string;
-  uploadedAt: Date;
-  data: string;
+  uploadedAt: string;
 }
 
 export default function FileShareApp() {
@@ -40,6 +38,8 @@ export default function FileShareApp() {
   const [showQRModal, setShowQRModal] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [isDragging, setIsDragging] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
 
   const formatSize = (bytes: number) => {
     if (bytes === 0) return "0 B";
@@ -57,28 +57,63 @@ export default function FileShareApp() {
     return <File className="w-6 h-6 text-gray-500" />;
   };
 
-  const handleFileSelect = useCallback((selectedFiles: FileList | null) => {
-    if (!selectedFiles) return;
-    
-    const newFiles: SharedFile[] = [];
-    
-    Array.from(selectedFiles).forEach(file => {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const sharedFile: SharedFile = {
-          id: Date.now() + Math.random().toString(36).substr(2, 9),
-          name: file.name,
-          size: file.size,
-          type: file.type,
-          uploadedAt: new Date(),
-          data: e.target?.result as string,
-        };
-        
-        setFiles(prev => [...prev, sharedFile]);
-      };
-      reader.readAsDataURL(file);
-    });
+  const fetchFiles = useCallback(async () => {
+    try {
+      const response = await fetch("/api/files");
+      const data = await response.json();
+      setFiles(data);
+    } catch (error) {
+      console.error("Error fetching files:", error);
+    }
   }, []);
+
+  useEffect(() => {
+    fetchFiles();
+    
+    // 定期刷新文件列表
+    const interval = setInterval(fetchFiles, 5000);
+    return () => clearInterval(interval);
+  }, [fetchFiles]);
+
+  const handleFileSelect = useCallback(async (selectedFiles: FileList | null) => {
+    if (!selectedFiles || selectedFiles.length === 0) return;
+    
+    setIsUploading(true);
+    setUploadProgress(0);
+    
+    try {
+      const formData = new FormData();
+      Array.from(selectedFiles).forEach((file, index) => {
+        formData.append("files", file);
+      });
+      
+      setUploadProgress(30);
+      
+      const response = await fetch("/api/files", {
+        method: "POST",
+        body: formData,
+      });
+      
+      setUploadProgress(70);
+      
+      if (response.ok) {
+        const uploadedFiles = await response.json();
+        setFiles(prev => [...prev, ...uploadedFiles]);
+        setUploadProgress(100);
+      } else {
+        throw new Error("Upload failed");
+      }
+    } catch (error) {
+      console.error("Error uploading files:", error);
+      alert("文件上传失败，请重试");
+    } finally {
+      setTimeout(() => {
+        setIsUploading(false);
+        setUploadProgress(0);
+        fetchFiles();
+      }, 500);
+    }
+  }, [fetchFiles]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -95,16 +130,29 @@ export default function FileShareApp() {
     setIsDragging(false);
   }, []);
 
-  const deleteFile = useCallback((id: string) => {
-    setFiles(prev => prev.filter(f => f.id !== id));
-    if (selectedFile?.id === id) {
-      setSelectedFile(null);
+  const deleteFile = useCallback(async (id: string) => {
+    try {
+      const response = await fetch(`/api/files?id=${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
+      
+      if (response.ok) {
+        setFiles(prev => prev.filter(f => f.id !== id));
+        if (selectedFile?.id === id) {
+          setSelectedFile(null);
+        }
+      } else {
+        throw new Error("Delete failed");
+      }
+    } catch (error) {
+      console.error("Error deleting file:", error);
+      alert("删除文件失败，请重试");
     }
   }, [selectedFile]);
 
   const downloadFile = useCallback((file: SharedFile) => {
     const link = document.createElement("a");
-    link.href = file.data;
+    link.href = `/uploads/${encodeURIComponent(file.id)}`;
     link.download = file.name;
     link.click();
   }, []);
@@ -124,6 +172,10 @@ export default function FileShareApp() {
   const getLocalIP = () => {
     return window.location.origin;
   };
+  
+  const getFileShareUrl = (file: SharedFile) => {
+    return `${window.location.origin}/uploads/${encodeURIComponent(file.id)}`;
+  };
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -142,10 +194,13 @@ export default function FileShareApp() {
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <div className="hidden sm:flex items-center gap-2 bg-slate-100 rounded-lg px-3 py-1.5">
-                <Monitor className="w-4 h-4 text-slate-600" />
-                <span className="text-sm text-slate-600">PC端</span>
-              </div>
+              <button
+                onClick={fetchFiles}
+                className="flex items-center gap-2 bg-slate-100 hover:bg-slate-200 rounded-lg px-3 py-1.5 transition-colors"
+              >
+                <RefreshCw className="w-4 h-4 text-slate-600" />
+                <span className="text-sm text-slate-600">刷新</span>
+              </button>
               <div className="flex items-center gap-2 bg-blue-100 rounded-lg px-3 py-1.5">
                 <Smartphone className="w-4 h-4 text-blue-600" />
                 <span className="text-sm text-blue-600 font-medium">全平台兼容</span>
@@ -172,16 +227,31 @@ export default function FileShareApp() {
             </div>
             <h2 className="text-2xl font-bold text-slate-800 mb-2">上传文件</h2>
             <p className="text-slate-600 mb-6">拖拽文件到此处，或点击选择文件</p>
-            <label className="inline-flex items-center gap-2 bg-gradient-to-r from-blue-500 to-indigo-600 text-white px-6 py-3 rounded-xl font-medium cursor-pointer hover:from-blue-600 hover:to-indigo-700 transition-all shadow-lg hover:shadow-xl transform hover:-translate-y-0.5">
-              <Upload className="w-5 h-5" />
-              选择文件
-              <input
-                type="file"
-                multiple
-                className="hidden"
-                onChange={(e) => handleFileSelect(e.target.files)}
-              />
-            </label>
+            
+            {isUploading ? (
+              <div className="w-full max-w-md mx-auto">
+                <div className="bg-slate-100 rounded-full h-3 overflow-hidden">
+                  <motion.div
+                    className="h-full bg-gradient-to-r from-blue-500 to-indigo-600"
+                    initial={{ width: 0 }}
+                    animate={{ width: `${uploadProgress}%` }}
+                    transition={{ duration: 0.3 }}
+                  />
+                </div>
+                <p className="text-sm text-slate-500 mt-2">正在上传...</p>
+              </div>
+            ) : (
+              <label className="inline-flex items-center gap-2 bg-gradient-to-r from-blue-500 to-indigo-600 text-white px-6 py-3 rounded-xl font-medium cursor-pointer hover:from-blue-600 hover:to-indigo-700 transition-all shadow-lg hover:shadow-xl transform hover:-translate-y-0.5">
+                <Upload className="w-5 h-5" />
+                选择文件
+                <input
+                  type="file"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => handleFileSelect(e.target.files)}
+                />
+              </label>
+            )}
           </div>
         </div>
 
@@ -222,7 +292,7 @@ export default function FileShareApp() {
                       <p className="text-sm text-slate-500 mt-1">{formatSize(file.size)}</p>
                       <p className="text-xs text-slate-400 mt-0.5 flex items-center gap-1">
                         <Clock className="w-3 h-3" />
-                        {file.uploadedAt.toLocaleTimeString()}
+                        {new Date(file.uploadedAt).toLocaleString()}
                       </p>
                     </div>
                   </div>
@@ -307,7 +377,7 @@ export default function FileShareApp() {
               <div className="p-8 text-center">
                 <div className="bg-white p-4 rounded-xl inline-block shadow-inner">
                   <QRCodeSVG
-                    value={getLocalIP()}
+                    value={getFileShareUrl(selectedFile)}
                     size={200}
                     level="H"
                     includeMargin
@@ -316,12 +386,12 @@ export default function FileShareApp() {
                   />
                 </div>
                 <p className="mt-6 text-slate-600">
-                  使用手机扫描二维码访问
+                  使用手机扫描二维码下载文件
                 </p>
                 <div className="mt-4 p-4 bg-slate-50 rounded-xl">
                   <p className="text-sm text-slate-500 mb-2">或访问以下地址：</p>
                   <code className="text-sm text-blue-600 bg-blue-50 px-3 py-1.5 rounded-lg break-all">
-                    {getLocalIP()}
+                    {getFileShareUrl(selectedFile)}
                   </code>
                 </div>
               </div>
